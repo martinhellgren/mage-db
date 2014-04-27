@@ -1,16 +1,80 @@
 <?php
+/**
+ * @package Mage_Database_Tool
+ * @origin https://gist.github.com/ceckoslab/4495889
+ * @author Thomas Uhlig <tuhlig@mediarox.de>
+ */
 
 define('DS', DIRECTORY_SEPARATOR);
 libxml_use_internal_errors(true);
 
+/**
+ * Magento Mysql tool for recurring import and export tasks.
+ */
 class Mage_Database_Tool
 {
-    private $version = 'v0.02.02';
+    private $version = 'v0.02.03';
 
-    protected $pathPrefix = false;
-    protected $configPath = false;
+    protected $pathPrefix;
+    protected $configPath;
+    protected $doCommands = true;
 
+    const SHORT_OPTIONS = 'vd';
+    const SHORT_OPTIONS_SINGLE = 'hHt';
+    const SHORT_OPTIONS_COMBINABLE = 'e:i:x:';
+
+    protected $longOptions = array(
+        'verbose',
+        'debug'
+    );
+
+    protected $longOptionsSingle = array(
+        'help',
+        'test'
+    );
+
+    protected $longOptionsCombinable = array(
+        'export:',
+        'import:',
+        'execute:'
+    );
     protected $xml = null;
+    protected $xmlValid = false;
+    protected $xmlInfoList = array(
+        'name',
+        'host',
+        'port',
+        'user',
+        'pass',
+        'pref',
+        'http',
+        'https'
+    );
+
+    protected $ignoreTables = array(
+        'adminnotification_inbox',
+        'aw_core_logger',
+        'dataflow_batch_export',
+        'dataflow_batch_import',
+        'log_customer',
+        'log_quote',
+        'log_summary',
+        'log_summary_type',
+        'log_url',
+        'log_url_info',
+        'log_visitor',
+        'log_visitor_info',
+        'log_visitor_online',
+        'index_event',
+        'report_event',
+        'report_viewed_product_index',
+        'report_compared_product_index',
+        'catalog_compare_item',
+        'catalogindex_aggregation',
+        'catalogindex_aggregation_tag',
+        'catalogindex_aggregation_to_tag'
+    );
+
     const XPATH_CONNECTION_HOST = 'global/resources/default_setup/connection/host';
     const XPATH_CONNECTION_NAME = 'global/resources/default_setup/connection/dbname';
     const XPATH_CONNECTION_USER = 'global/resources/default_setup/connection/username';
@@ -21,6 +85,9 @@ class Mage_Database_Tool
 
     protected $debug = false;
     protected $verbose = false;
+
+    protected $singleCommandHit = false;
+    protected $combinableCommandHit = false;
 
     private $db = false;
     const DB_HOST = 'host';
@@ -37,6 +104,12 @@ class Mage_Database_Tool
     const ACTION_IMPORT = 'import';
     const ACTION_EXECUTE = 'execute';
 
+    protected $errorMessages = array(
+        'export' => 'use of --export or -e is only allowed with valid filename as following element',
+        'import' => 'import file missing or import file not found',
+        'execute' => 'sql script missing entered or sql script not found'
+    );
+
     const NOT_SET = '<empty>';
     const MSG_OK = ", ok\n";
     const MSG_DONE = ", done\n";
@@ -45,7 +118,26 @@ class Mage_Database_Tool
     const COMMAND_MYSQL = 'mysql';
     const COMMAND_MYSQL_DUMP = 'mysqldump';
 
-    protected $command_stack = array();
+    protected $commandStack = array();
+
+    /**
+     * Init
+     */
+    public function __construct()
+    {
+        $this->pathPrefix = '.' . DS;
+        $this->configPath = 'app' . DS . 'etc' . DS . 'local.xml';
+        $this->db = array(
+            self::DB_HOST => false,
+            self::DB_PORT => false,
+            self::DB_NAME => false,
+            self::DB_USER => false,
+            self::DB_PASS => false,
+            self::DB_PREF => false,
+            self::DB_HTTP => false,
+            self::DB_HTTPS => false
+        );
+    }
 
     protected function _getGeneralAccessStatement($includeDbName = true)
     {
@@ -71,33 +163,9 @@ class Mage_Database_Tool
     protected function _getDumpDataStatement($sqlFileName)
     {
         $ignoreTables = '';
-        foreach (
-            array(
-                'adminnotification_inbox',
-                'aw_core_logger',
-                'dataflow_batch_export',
-                'dataflow_batch_import',
-                'log_customer',
-                'log_quote',
-                'log_summary',
-                'log_summary_type',
-                'log_url',
-                'log_url_info',
-                'log_visitor',
-                'log_visitor_info',
-                'log_visitor_online',
-                'index_event',
-                'report_event',
-                'report_viewed_product_index',
-                'report_compared_product_index',
-                'catalog_compare_item',
-                'catalogindex_aggregation',
-                'catalogindex_aggregation_tag',
-                'catalogindex_aggregation_to_tag'
-            ) as $table) {
+        foreach ($this->ignoreTables as $table) {
             $ignoreTables .= ' --ignore-table="' . $this->db[self::DB_NAME] . '.' . $this->db[self::DB_PREF] . $table .'"';
         }
-
         $_result = self::COMMAND_MYSQL_DUMP;
         $_result .= $ignoreTables;
         $_result .= $this->_getGeneralAccessStatement();
@@ -164,107 +232,40 @@ class Mage_Database_Tool
         return $_result;
     }
 
-    protected function _run($action_code, $sqlFileName = false)
+    /**
+     * Print a single db information.
+     *
+     * @param $value
+     */
+    public function printXmlLine($value)
     {
-        if (!$this->xml) {
+        $constName = 'DB_' . strtoupper($value);
+        printf("db.%s = %s \n",
+            $value,
+            ($this->db[constant('self::'. $constName)] ? $this->db[constant('self::'. $constName)] : self::NOT_SET)
+        );
+    }
 
-            // first looking for local.xml
-            $i = 10;
-            while ($i-- > 0) {
-                if (is_null($this->xml)) {
-                    echo "looking for local.xml";
+    /**
+     * Run a single command.
+     *
+     * @param string $action_code
+     * @param string $sqlFileName
+     * @return bool
+     */
+    protected function runCommand($action_code, $sqlFileName = null)
+    {
+        switch($action_code)
+        {
+            case self::ACTION_SHOW_XML:
+                printf("\n file = %s \n", $this->pathPrefix . $this->configPath);
+                foreach($this->xmlInfoList as $info)
+                {
+                    $this->printXmlLine($info);
                 }
-                $this->xml = simplexml_load_file($this->pathPrefix . $this->configPath, NULL, LIBXML_NOCDATA);
+                break;
 
-                if (false !== $this->xml) {
-
-                    if ($this->verbose) {
-                        echo ", found at '" . $this->pathPrefix . $this->configPath . "'\n";
-                        echo "looking for database information";
-                    } else {
-                        echo ", found";
-                    }
-
-                    if ($_data = $this->xml->xpath(self::XPATH_CONNECTION_HOST)) {
-                        $host = explode(':', (string)$_data[0]);
-                        $this->db[self::DB_HOST] = $host[0];
-                        $this->db[self::DB_PORT] = (count($host) > 1) ? $host[1] : false;
-                    }
-                    if ($_data = $this->xml->xpath(self::XPATH_CONNECTION_NAME)) {
-                        $this->db[self::DB_NAME] = (string)$_data[0];
-                    }
-                    if ($_data = $this->xml->xpath(self::XPATH_CONNECTION_USER)) {
-                        $this->db[self::DB_USER] = (string)$_data[0];
-                    }
-                    if ($_data = $this->xml->xpath(self::XPATH_CONNECTION_PASS)) {
-                        $this->db[self::DB_PASS] = (string)$_data[0];
-                    }
-                    if ($_data = $this->xml->xpath(self::XPATH_CONNECTION_PREF)) {
-                        $this->db[self::DB_PREF] = (string)$_data[0];
-                    }
-                    if ($_data = $this->xml->xpath(self::XPATH_BASEURL_UNSECURE)) {
-                        $this->db[self::DB_HTTP] = (string)$_data[0];
-                    }
-                    if ($_data = $this->xml->xpath(self::XPATH_BASEURL_SECURE)) {
-                        $this->db[self::DB_HTTPS] = (string)$_data[0];
-                    }
-                    if (!$this->db[self::DB_HTTPS]) {
-                        $this->db[self::DB_HTTPS] = $this->db[self::DB_HTTP];
-                    }
-
-                    if ($this->db[self::DB_HOST] && $this->db[self::DB_NAME] && $this->db[self::DB_USER] && (false !== $this->db[self::DB_PASS])) {
-                        if ($this->verbose) {
-                            echo ", found";
-                        }
-                        echo self::MSG_OK;
-                        break;
-
-                    } else {
-                        if ($this->verbose) {
-                            echo ", invalid data\n";
-                        } else {
-                            echo " but invalid data\n";
-                        }
-                        $this->xml = null;
-                    }
-
-                }
-
-                if (9 == $i) {
-                    $this->pathPrefix = '.' . $this->pathPrefix;
-                } else {
-                    $this->pathPrefix = '..' . DS . $this->pathPrefix;
-                }
-            }
-        }
-
-        if ($this->xml) {
-
-            // default dump name
-            if (!$sqlFileName) {
-                $sqlFileName = $this->pathPrefix . 'var' . DS . date('Y-m-d-His') . '_' . $this->db[self::DB_NAME] . '.sql';
-            }
-
-            // print data from local.xml
-            if (self::ACTION_SHOW_XML == $action_code) {
-
-                echo "\n";
-                echo "file     = " . $this->pathPrefix . $this->configPath . "\n";
-                echo "db.name  = " . ($this->db[self::DB_NAME] ? $this->db[self::DB_NAME] : self::NOT_SET) . "\n";
-                echo "db.host  = " . ($this->db[self::DB_HOST] ? $this->db[self::DB_HOST] : self::NOT_SET) . "\n";
-                echo "db.port  = " . ($this->db[self::DB_PORT] ? $this->db[self::DB_PORT] : self::NOT_SET) . "\n";
-                echo "db.user  = " . ($this->db[self::DB_USER] ? $this->db[self::DB_USER] : self::NOT_SET) . "\n";
-                echo "db.pass  = " . ($this->db[self::DB_PASS] ? $this->db[self::DB_PASS] : self::NOT_SET) . "\n";
-                echo "db.pref  = " . ($this->db[self::DB_PREF] ? $this->db[self::DB_PREF] : self::NOT_SET) . "\n";
-
-                echo "db.http  = " . ($this->db[self::DB_HTTP] ? $this->db[self::DB_HTTP] : self::NOT_SET) . "\n";
-                echo "db.https = " . ($this->db[self::DB_HTTPS] ? $this->db[self::DB_HTTPS] : self::NOT_SET) . "\n";
-
-            }
-
-            // export
-            if (self::ACTION_EXPORT == $action_code) {
-
+            case self::ACTION_EXPORT:
                 echo "db.export('$sqlFileName')";
                 // extract DB schema
                 $_command = $this->_getDumpSchemaStatement($sqlFileName);
@@ -274,12 +275,9 @@ class Mage_Database_Tool
                 $_command = $this->_getDumpDataStatement($sqlFileName);
                 $this->_executeCommand($_command);
                 echo $this->msg_done;
+                break;
 
-            }
-
-            // import
-            if (self::ACTION_IMPORT == $action_code) {
-
+            case self::ACTION_IMPORT:
                 echo "db.getAllTables()";
                 // get all tables in DB
                 $_command = $this->_getAllTablesStatement();
@@ -329,25 +327,92 @@ class Mage_Database_Tool
                     echo $this->msg_done;
 
                 }
-            }
+                break;
 
-            // execute
-            if (self::ACTION_EXECUTE == $action_code) {
-
+            case self::ACTION_EXECUTE:
                 echo "db.execute('$sqlFileName')";
                 $_command = $this->_getExecuteSqlFileStatement($sqlFileName);
                 $this->_executeCommand($_command);
                 echo $this->msg_done;
+                break;
+        }
+    }
 
+    /**
+     * Load "local.xml" if isn't loaded yet.
+     */
+    protected function loadXml()
+    {
+        if(is_null($this->xml)) $this->searchLocalXml();
+        if(is_null($this->xml)) {
+            echo "\nno valid local.xml found, therefore this is over now.\n";
+            exit;
+        }
+    }
+
+    /**
+     * Search "local.xml" wrapper
+     */
+    protected function searchLocalXml()
+    {
+        $i = 10;
+        while ($i-- > 0) {
+            if (is_null($this->xml)) printf("looking for local.xml \n");
+
+            $this->xml = simplexml_load_file($this->pathPrefix . $this->configPath, NULL, LIBXML_NOCDATA);
+
+            if (false !== $this->xml) {
+                $this->parseLocalXml();
+                if($this->xmlValid) break;
             }
 
-            return true;
+            if (9 == $i) {
+                $this->pathPrefix = '.' . $this->pathPrefix;
+            } else {
+                $this->pathPrefix = '..' . DS . $this->pathPrefix;
+            }
+        }
+    }
 
+    /**
+     * Parse "local.xml" informations.
+     *
+     * Step 1: Inform about located "local.xml".
+     * Step 2: Parse host and optional port (localhost<:3306>)
+     * Step 3: Parse remaining db-settings.
+     * Step 4: Check db-data integrity.
+     */
+    protected function parseLocalXml()
+    {
+        // Step 1
+        if($this->verbose) printf(', found at %s \n', $this->pathPrefix . $this->configPath);
+
+        // Step 2
+        if ($_data = $this->xml->xpath(self::XPATH_CONNECTION_HOST)) {
+            $host = explode(':', (string)$_data[0]);
+            $this->db[self::DB_HOST] = $host[0];
+            $this->db[self::DB_PORT] = (count($host) > 1) ? $host[1] : false;
+        }
+
+        // Step 3
+        if ($_data = $this->xml->xpath(self::XPATH_CONNECTION_NAME)) $this->db[self::DB_NAME] = (string)$_data[0];
+        if ($_data = $this->xml->xpath(self::XPATH_CONNECTION_USER)) $this->db[self::DB_USER] = (string)$_data[0];
+        if ($_data = $this->xml->xpath(self::XPATH_CONNECTION_PASS)) $this->db[self::DB_PASS] = (string)$_data[0];
+        if ($_data = $this->xml->xpath(self::XPATH_CONNECTION_PREF)) $this->db[self::DB_PREF] = (string)$_data[0];
+        if ($_data = $this->xml->xpath(self::XPATH_BASEURL_UNSECURE)) $this->db[self::DB_HTTP] = (string)$_data[0];
+        if ($_data = $this->xml->xpath(self::XPATH_BASEURL_SECURE)) $this->db[self::DB_HTTPS] = (string)$_data[0];
+        if (!$this->db[self::DB_HTTPS]) $this->db[self::DB_HTTPS] = $this->db[self::DB_HTTP];
+
+        // Step 4
+        if ($this->db[self::DB_HOST] &&
+            $this->db[self::DB_NAME] &&
+            $this->db[self::DB_USER] &&
+            (false !== $this->db[self::DB_PASS])) {
+            $this->xmlValid = true;
         } else {
-
-            echo "\nno valid local.xml found, therefore this is over now.\n";
-            return false;
-
+            $this->xml = null;
+            printf(', but invalid. Please check. \n');
+            exit;
         }
     }
 
@@ -362,100 +427,186 @@ class Mage_Database_Tool
         }
     }
 
-    public function run($argv)
+    /**
+     * Run db tasks
+     *
+     * Step 1: Parse script arguments.
+     * Step 2: Load xml configuration.
+     * Step 3: Check for simple use.
+     * Step 4: Process command stack.
+     *
+     * @see shell command "php mage-db.php --help"
+     */
+    public function run()
     {
-        $this->pathPrefix = '.' . DS;
-        $this->configPath = 'app' . DS . 'etc' . DS . 'local.xml';
-        $this->xml = null;
-        $this->db = array(
-            self::DB_HOST => false,
-            self::DB_PORT => false,
-            self::DB_NAME => false,
-            self::DB_USER => false,
-            self::DB_PASS => false,
-            self::DB_PREF => false,
-            self::DB_HTTP => false,
-            self::DB_HTTPS => false
-        );
-        $this->debug = false;
-        $this->verbose = false;
+        // Step 1
+        $this->parseArguments();
 
-        $this->command_stack = array();
+        // Step 2
+        $this->loadXml();
 
-        $_error_message = null;
-        $_do_commands = true;
-        if (count($argv) == 1) {
-            $this->_pushCmd(self::ACTION_EXPORT, '');
-        } else {
-            $i = 1;
-            while (isset($argv[$i])) {
-                $arg = $argv[$i++];
-                if (('--help' == $arg) || ('-h' == $arg) || ('-H' == $arg) || ('-?' == $arg)) {
-                    $this->showHelp();
-                    $_do_commands = false;
-                    break;
-                } elseif (('--test' == $arg) || ('-t' == $arg)) {
-                    if ($this->_run(self::ACTION_SHOW_XML, '') == false) {
-                        $_do_commands = false;
-                        break;
-                    }
-                } elseif (('--export' == $arg) || ('-e' == $arg)) {
-                    $file = isset($argv[$i]) ? $argv[$i] : '';
-                    if ('-' != substr($file, 0, 1)) {
-                        $i++;
-                    } else {
-                        $file = '';
-                    }
-                    $this->_pushCmd(self::ACTION_EXPORT, $file);
-                } elseif (('--import' == $arg) || ('-i' == $arg)) {
-                    $file = isset($argv[$i]) ? $argv[$i++] : '';
-                    if (file_exists($file)) {
-                        $this->_pushCmd(self::ACTION_IMPORT, $file);
-                    } else {
-                        $_error_message = "import file missing or import file not found";
-                        break;
-                    }
-                } elseif (('--execute' == $arg) || ('-x' == $arg)) {
-                    $file = isset($argv[$i]) ? $argv[$i++] : '';
-                    if (file_exists($file)) {
-                        $this->_pushCmd(self::ACTION_EXECUTE, $file);
-                    } else {
-                        $_error_message = "sql script missing entered or sql script not found";
-                        break;
-                    }
-                } elseif (('--verbose' == $arg) || ('-v' == $arg)) {
+        // Step 3
+        $this->checkDefaultBehaviour();
+
+        // Step 4
+        $this->processCommandStack();
+    }
+
+    /**
+     * Convert command line arguments to options, commands and prepare command stack.
+     */
+    protected function parseArguments()
+    {
+        $this->parseOptions();
+        $this->parseSingleCommands();
+        if(false == $this->singleCommandHit) $this->parseCombinableCommands();
+    }
+
+    /**
+     * Parse all options from arguments.
+     */
+    protected function parseOptions()
+    {
+        $options = getopt(self::SHORT_OPTIONS, $this->longOptions);
+
+        foreach($options as $option => $value) {
+            switch($option)
+            {
+                case 'verbose':
+                case 'v':
                     $this->verbose = true;
-                } elseif (('--debug' == $arg) || ('-d' == $arg)) {
+                    break;
+                case 'debug':
+                case 'd':
                     $this->debug = true;
                     $this->msg_done = "\n";
-                    if (count($argv) == 2) {
-                        $this->_pushCmd(self::ACTION_EXPORT, '');
-                    }
-                }
-            }
-        }
-
-        if (!is_null($_error_message)) {
-            echo $_error_message . "\n";
-        }
-
-        if ($_do_commands && (count($this->command_stack) > 0)) {
-            foreach ($this->command_stack as $action) {
-                if (false == $this->_run($action['cmd'], $action['arg'])) {
                     break;
-                }
             }
         }
     }
 
-    protected function _pushCmd($cmd, $arg)
+    /**
+     * Parse single commands from arguments.
+     */
+    protected function parseSingleCommands()
     {
-        $this->command_stack[] = array(
+        $commandsSingle = getopt(self::SHORT_OPTIONS_SINGLE, $this->longOptionsSingle);
+
+        foreach($commandsSingle as $command => $file) {
+            switch($command)
+            {
+                case 'help':
+                case 'h':
+                case 'H':
+                    $this->singleCommandHit = true;
+                    $this->showHelp();
+                    break;
+                case 'test':
+                case 't':
+                    $this->singleCommandHit = true;
+                    $this->pushCommand(self::ACTION_SHOW_XML, '');
+                    break;
+            }
+            if($this->singleCommandHit) break;
+        }
+    }
+
+    /**
+     * Parse combinable commands from arguments.
+     */
+    protected function parseCombinableCommands()
+    {
+        $commandsCombinable = getopt(self::SHORT_OPTIONS_COMBINABLE, $this->longOptionsCombinable);
+        foreach($commandsCombinable as $command => $file) {
+            switch($command)
+            {
+                case 'export':
+                case 'e':
+                    $this->combinableCommandHit = true;
+                    $this->pushCommand(self::ACTION_EXPORT, $file);
+                    break;
+                case 'import':
+                case 'i':
+                    if (file_exists($file)) {
+                        $this->combinableCommandHit = true;
+                        $this->pushCommand(self::ACTION_IMPORT, $file);
+                    } else {
+                        $this->handleError($this->errorMessages['import']);
+                    }
+                    break;
+                case 'execute':
+                case 'x':
+                    if (file_exists($file)) {
+                        $this->combinableCommandHit = true;
+                        $this->pushCommand(self::ACTION_EXECUTE, $file);
+                    } else {
+                        $this->handleError($this->errorMessages['execute']);
+                    }
+                    break;
+            }
+        }
+    }
+
+    /**
+     * Check if no arguments were passed, to add default export command.
+     */
+    protected function checkDefaultBehaviour()
+    {
+        if((false == $this->singleCommandHit) && (false == $this->combinableCommandHit)) {
+            $exportFile = $this->pathPrefix . 'var' . DS . date('Y-m-d-His') . '_' . $this->db[self::DB_NAME] . '.sql';
+            $this->pushCommand(self::ACTION_EXPORT, $exportFile);
+        }
+    }
+
+    /**
+     * Handle wrapper for command errors.
+     *
+     * Stop the whole script because it could be important,
+     * that a export is valid before an import is running.
+     *
+     * @param $errorMessage
+     */
+    protected function handleError($errorMessage)
+    {
+        if(is_null($errorMessage)) return;
+        echo $errorMessage . "\n";
+        exit;
+    }
+
+    /**
+     * Process command stack
+     *
+     * Step 1: Return, if no commands available.
+     * Step 2: Run all commands from stack.
+     */
+    protected function processCommandStack()
+    {
+        // Step 1
+        if(count($this->commandStack) == 0) return;
+
+        // Step 2
+        foreach ($this->commandStack as $action) {
+            $this->runCommand($action['cmd'], $action['arg']);
+        }
+    }
+
+    /**
+     * Push a single command to command stack.
+     *
+     * @param $cmd
+     * @param $arg
+     */
+    protected function pushCommand($cmd, $arg)
+    {
+        $this->commandStack[] = array(
             'cmd' => $cmd,
             'arg' => $arg
         );
     }
 
+    /**
+     * Print help to options and commands.
+     */
     protected function showHelp()
     {
         echo "Magento DB-Tool " . $this->version .": \n";
@@ -468,6 +619,7 @@ class Mage_Database_Tool
         echo "   -i, --import FILENAME   : import DB from FILENAME (drop ALL tables first; set BASE_URLS, if defined)\n";
         echo "    (define base urls at local.xml->config->global->resources->web->base_url->{unsecure / secure})\n";
         echo "   -x, --execute FILENAME  : execute sql script FILENAME\n";
+        exit;
     }
 }
 
