@@ -485,11 +485,15 @@ class Mage_Database_Tool
             // Step 2
             $this->loadXml();
 
-            // Step 3
-            $this->checkDefaultBehaviour();
+            if ($this->xmlValid) {
+                // Step 3
+                $this->checkDefaultBehaviour();
 
-            // Step 4
-            $this->processCommandStack();
+                if (0 == $this->errorCounter) {
+                    // Step 4
+                    $this->processCommandStack();
+                }
+            }
         }
     }
 
