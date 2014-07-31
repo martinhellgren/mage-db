@@ -25,7 +25,6 @@ class Mage_Database_Tool
     protected $configPath;
 
     protected $doCommands = true;
-//    protected $executeWithoutAsk = true;
 
     protected $tablesToIgnore = array(
         'adminnotification_inbox',
@@ -141,19 +140,21 @@ class Mage_Database_Tool
     const ACTION_IMPORT = 'import';
     const ACTION_EXECUTE = 'run';
     const ACTION_CLEAR = 'clear';
+    const ACTION_TEST = 'test';
 
     protected $errorMessages = array(
-        'arg1' => 'unknown argument found',
-        'import1' => 'import file missing or import file not found',
-        'run1' => 'sql script missing or sql script not found',
-        'xml1' => 'magento root directory missing or invalid',
-        'export1' => 'could not create export file',
-        'export2' => 'directory "var" does not exist',
-        'export3' => 'you can\'t export to a directory',
-        'access' => 'remote mode allows read db only',
-        'exec1' => 'can\'t create process',
-        'exec2' => 'executing command failed',
-        'get_tables' => 'can\'t read tables from database',
+        'arg1' => "unknown argument found",
+        'import1' => "import file missing or import file not found",
+        'run1' => "sql script missing or sql script not found",
+        'xml1' => "magento root directory missing or invalid",
+        'export1' => "could not create export file",
+        'export2' => "directory 'var' does not exist",
+        'export3' => "you can't export to a directory",
+        'access' => "remote mode allows read db only",
+        'exec1' => "can't create process",
+        'exec2' => "execute command returned with error",
+        'get_tables1' => "unable to read tables from database",
+        'get_tables2' => "execute sql is disabled, use -v to get tables in debug mode",
     );
 
     const NOT_SET = '(not set)';
@@ -193,102 +194,209 @@ class Mage_Database_Tool
 
     protected function _getGeneralAccessStatement($includeDbName = true)
     {
-        $_result = ' --user=' . $this->db[self::DB_USER];
-        $_result .= ($this->db[self::DB_PASS] ? ' --password=' . $this->db[self::DB_PASS] : '');
-        $_result .= ' --host=' . $this->db[self::DB_HOST];
-        $_result .= ($this->db[self::DB_PORT] ? ' --port=' . $this->db[self::DB_PORT] : '');
-        $_result .= ($includeDbName ? ' ' . $this->db[self::DB_NAME] : '');
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $_result = ' --user=' . $this->db[self::DB_USER];
+                $_result .= ($this->db[self::DB_PASS] ? ' --password=' . $this->db[self::DB_PASS] : '');
+                $_result .= ' --host=' . $this->db[self::DB_HOST];
+                $_result .= ($this->db[self::DB_PORT] ? ' --port=' . $this->db[self::DB_PORT] : '');
+                $_result .= ($includeDbName ? ' ' . $this->db[self::DB_NAME] : '');
 
-        return $this->_getStatementFinish($_result);
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
     }
 
     protected function _getDumpSchemaStatement($sqlFileName)
     {
-        $_result = self::COMMAND_MYSQL_DUMP;
-        $_result .= ' --no-data';
-        $_result .= $this->_getGeneralAccessStatement();
-        $_result .= ' > "' . $sqlFileName . '"';
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $_result = self::COMMAND_MYSQL_DUMP;
+                $_result .= ' --no-data';
+                $_result .= $this->_getGeneralAccessStatement();
+                $_result .= ' > "' . $sqlFileName . '"';
 
-        return $this->_getStatementFinish($_result);
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
     }
 
     protected function _getDumpDataStatement($sqlFileName)
     {
-        $tablesToIgnore = '';
-        foreach ($this->tablesToIgnore as $table) {
-            $tablesToIgnore .= ' --ignore-table="' . $this->db[self::DB_NAME] . '.' . $this->db[self::DB_PREF] . $table .'"';
-        }
-        $_result = self::COMMAND_MYSQL_DUMP;
-        $_result .= $tablesToIgnore;
-        $_result .= $this->_getGeneralAccessStatement();
-        $_result .= ' >> "' . $sqlFileName . '"';
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $tablesToIgnore = '';
+                foreach ($this->tablesToIgnore as $table) {
+                    $tablesToIgnore .= ' --ignore-table="' . $this->db[self::DB_NAME] . '.' . $this->db[self::DB_PREF] . $table .'"';
+                }
+                $_result = self::COMMAND_MYSQL_DUMP;
+                $_result .= $tablesToIgnore;
+                $_result .= $this->_getGeneralAccessStatement();
+                $_result .= ' >> "' . $sqlFileName . '"';
 
-        return $this->_getStatementFinish($_result);
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
     }
 
     protected function _getAllTablesStatement()
     {
-        $_result = self::COMMAND_MYSQL;
-        $_result .= $this->_getGeneralAccessStatement(false);
-        $_result .= ' --skip-column-names --silent --execute="show tables"';
-        $_result .= ' ' . $this->db[self::DB_NAME];
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $_result = self::COMMAND_MYSQL;
+                $_result .= $this->_getGeneralAccessStatement(false);
+                $_result .= ' --skip-column-names --silent --execute="show tables"';
+                $_result .= ' ' . $this->db[self::DB_NAME];
 
-        return $this->_getStatementFinish($_result);
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
     }
 
     protected function _getDropTableStatement($table)
     {
-        $_result = self::COMMAND_MYSQL;
-        $_result .= $this->_getGeneralAccessStatement(false);
-        $_result .= ' --execute="SET FOREIGN_KEY_CHECKS = 0; drop table ' . $table .'"';
-        $_result .= ' ' . $this->db[self::DB_NAME];
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $_result = self::COMMAND_MYSQL;
+                $_result .= $this->_getGeneralAccessStatement(false);
+                $_result .= ' --execute="SET FOREIGN_KEY_CHECKS = 0; drop table ' . $table .'"';
+                $_result .= ' ' . $this->db[self::DB_NAME];
 
-        return $this->_getStatementFinish($_result);
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
     }
 
     protected function _getImportSqlFileStatement($sqlFileName)
     {
-        $_result = self::COMMAND_MYSQL;
-        $_result .= $this->_getGeneralAccessStatement();
-        $_result .= ' < "' . $sqlFileName .'"';
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $_result = self::COMMAND_MYSQL;
+                $_result .= $this->_getGeneralAccessStatement();
+                $_result .= ' < "' . $sqlFileName .'"';
 
-        return $this->_getStatementFinish($_result);
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
     }
 
     protected function _getExecuteSqlFileStatement($sqlFileName)
     {
-        $_result = self::COMMAND_MYSQL;
-        $_result .= $this->_getGeneralAccessStatement();
-        $_result .= ' < "' . $sqlFileName .'"';
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $_result = self::COMMAND_MYSQL;
+                $_result .= $this->_getGeneralAccessStatement();
+                $_result .= ' < "' . $sqlFileName .'"';
 
-        return $this->_getStatementFinish($_result);
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
     }
 
     protected function _getSetBaseUrlUnsecureStatement()
     {
-        $_result = self::COMMAND_MYSQL;
-        $_result .= $this->_getGeneralAccessStatement(false);
-        $_result .= ' --execute="UPDATE core_config_data SET value=\'' . $this->db[self::DB_HTTP] . '\' WHERE path=\'web/unsecure/base_url\'"';
-        $_result .= ' ' . $this->db[self::DB_NAME];
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $_result = self::COMMAND_MYSQL;
+                $_result .= $this->_getGeneralAccessStatement(false);
+                $_result .= ' --execute="UPDATE core_config_data SET value=\'' . $this->db[self::DB_HTTP] . '\' WHERE path=\'web/unsecure/base_url\'"';
+                $_result .= ' ' . $this->db[self::DB_NAME];
 
-        return $this->_getStatementFinish($_result);
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
     }
 
     protected function _getSetBaseUrlSecureStatement()
     {
-        $_result = self::COMMAND_MYSQL;
-        $_result .= $this->_getGeneralAccessStatement(false);
-        $_result .= ' --execute="UPDATE core_config_data SET value=\'' . $this->db[self::DB_HTTPS] . '\' WHERE path=\'web/secure/base_url\'"';
-        $_result .= ' ' . $this->db[self::DB_NAME];
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $_result = self::COMMAND_MYSQL;
+                $_result .= $this->_getGeneralAccessStatement(false);
+                $_result .= ' --execute="UPDATE core_config_data SET value=\'' . $this->db[self::DB_HTTPS] . '\' WHERE path=\'web/secure/base_url\'"';
+                $_result .= ' ' . $this->db[self::DB_NAME];
 
-        return $this->_getStatementFinish($_result);
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
+    }
+
+    protected function _getTestDatabaseConnectionStatement()
+    {
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $_result = self::COMMAND_MYSQL;
+                $_result .= $this->_getGeneralAccessStatement(false);
+                $_result .= ' --execute="exit"';
+                $_result .= ' ' . $this->db[self::DB_NAME];
+
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
     }
 
     protected function _getStatementFinish($statement)
     {
-//        return $statement . ' 2>/dev/null';
-//        return $statement . ' 2>&1';
-        return $statement;
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                return $statement; // ' 2>&1' ' 2>/dev/null'
+                break;
+
+            default:
+                return $statement;
+                break;
+        }
     }
 
     /**
@@ -350,62 +458,20 @@ class Mage_Database_Tool
 
             case self::ACTION_IMPORT:
                 if ($this->isLocalAccess()) {
-                    echo "db.getAllTables()";
-                    // get all tables in DB
-                    $_command = $this->_getAllTablesStatement();
-                    $allTables = explode("\n", $this->executeCommand($_command));
-                    if (is_array($allTables)) {
-                        $countTables = 0;
-                        foreach ($allTables as $table) {
-                            if ($table) $countTables++;
-                        }
-                        if (!$this->debug) {
-                            echo ",";
-                        } else {
-                            echo "->";
-                        }
-                        echo " found " . $countTables . " table(s)";
-                        echo $this->msg_done;
-                        if ($countTables > 0) {
-                            // drop each table in DB
-                            echo "db.dropTables()";
-                            if ($this->verbose) {
-                                echo "\n";
-                            }
-                            foreach ($allTables as $table) {
-                                if ($table) {
-                                    $_command = $this->_getDropTableStatement($table);
-                                    if ($this->verbose) {
-                                        echo "db.dropTable('$table')";
-                                    }
-                                    $this->executeCommand($_command, true);
-                                    if ($this->verbose) {
-                                        echo $this->msg_done;
-                                    }
-                                }
-                            }
-                            if (!$this->verbose) {
-                                echo $this->msg_done;
-                            }
-                        }
+                    echo "db.import('$sqlFileName')";
+                    $_command = $this->_getImportSqlFileStatement($sqlFileName);
+                    $this->executeCommand($_command);
+                    echo $this->msg_done;
 
-                        echo "db.import('$sqlFileName')";
-                        $_command = $this->_getImportSqlFileStatement($sqlFileName);
+                    // set shop base urls (if defined in local.xml)
+                    if ($this->db['http']) {
+                        echo "db.setBaseURLs()";
+                        $_command = $this->_getSetBaseUrlUnsecureStatement();
+                        $this->executeCommand($_command);
+
+                        $_command = $this->_getSetBaseUrlSecureStatement();
                         $this->executeCommand($_command);
                         echo $this->msg_done;
-
-                        // set shop base urls (if defined in local.xml)
-                        if ($this->db['http']) {
-                            echo "db.setBaseURLs()";
-                            $_command = $this->_getSetBaseUrlUnsecureStatement();
-                            $this->executeCommand($_command);
-
-                            $_command = $this->_getSetBaseUrlSecureStatement();
-                            $this->executeCommand($_command);
-                            echo $this->msg_done;
-                        }
-                    } else {
-                        $this->handleError('get_tables');
                     }
                 } else {
                     $this->handleError('access');
@@ -428,18 +494,14 @@ class Mage_Database_Tool
                     echo "db.getAllTables()";
                     // get all tables in DB
                     $_command = $this->_getAllTablesStatement();
-                    $allTables = explode("\n", $this->executeCommand($_command));
+                    $allTables = $this->executeCommand($_command, (true == $this->verbose), true);
                     if (is_array($allTables)) {
-                        $countTables = 0;
-                        foreach ($allTables as $table) {
-                            if ($table) $countTables++;
-                        }
-                        if (!$this->debug) {
-                            echo ",";
+                        $countTables = count($allTables);
+                        if ($this->debug) {
+                            echo "\n-> found " . $countTables . " table(s)";
                         } else {
-                            echo "->";
+                            echo ", found " . $countTables . " table(s)";
                         }
-                        echo " found " . $countTables . " table(s)";
                         echo $this->msg_done;
                         if ($countTables > 0) {
                             // drop each table in DB
@@ -453,7 +515,7 @@ class Mage_Database_Tool
                                     if ($this->verbose) {
                                         echo "db.dropTable('$table')";
                                     }
-                                    $this->executeCommand($_command, true);
+                                    $this->executeCommand($_command);
                                     if ($this->verbose) {
                                         echo $this->msg_done;
                                     }
@@ -464,10 +526,25 @@ class Mage_Database_Tool
                             }
                         }
                     } else {
-                        $this->handleError('get_tables');
+                        if ($this->debug) {
+                            $this->handleError('get_tables2', null, true);
+                        } else {
+                            $this->handleError('get_tables1');
+                        }
                     }
                 } else {
                     $this->handleError('access');
+                }
+                break;
+            case self::ACTION_TEST:
+                echo "db.testConnection()";
+                $_command = $this->_getTestDatabaseConnectionStatement();
+                if (false !== $this->executeCommand($_command)) {
+                    echo ", ok";
+                    echo $this->msg_done;
+                } else {
+                    echo ", failed";
+                    echo $this->msg_done;
                 }
                 break;
         }
@@ -511,10 +588,17 @@ class Mage_Database_Tool
             if (false !== $this->xml) {
                 $this->parseLocalXml();
                 if ($this->xmlValid) {
-                    echo self::MSG_DONE;
-                    if ($this->db[self::DB_MODEL] && self::DB_MODEL_MYSQL != $this->db[self::DB_MODEL]) {
-                        echo "warning: DB model is set to '".$this->db[self::DB_MODEL]."'\n";
+                    switch ($this->db[self::DB_MODEL])
+                    {
+                        case self::DB_MODEL_MYSQL:
+                            break;
+
+                        default:
+                            $this->db[self::DB_MODEL] = self::DB_MODEL_MYSQL;
+                            break;
                     }
+
+                    echo self::MSG_DONE;
                     break;
                 }
             }
@@ -595,34 +679,17 @@ class Mage_Database_Tool
     }
 
     /**
-     *
-     * @param $message
-     * @return bool
-     */
-//    protected function checkExecuteStatement($message = null)
-//    {
-//        $force = $this->executeWithoutAsk || $this->debug;
-//        if (false == $force) {
-//            echo "\nType 'yes' to continue: ";
-//            $line = fgets(STDIN);
-//            $force = (trim($line) == 'yes');
-//        }
-//
-//        return $force;
-//    }
-
-    /**
      * @param $command
-     * @param bool $check_verbose
+     * @param bool $forceExecute
+     * @param bool $retStdOutAsArray
      * @return bool|mixed
      */
-    protected function executeCommand($command, $check_verbose = false)
+    protected function executeCommand($command, $forceExecute = false, $retStdOutAsArray = false)
     {
         if ($this->debug) {
-            if (!$check_verbose || $this->verbose) {
-                echo "\n-> command to execute:\n$command";
-            }
-        } elseif (0 == $this->errorCounter) {
+            echo "\n-> command to execute:\n$command";
+        }
+        if ((($this->debug == $forceExecute) || $forceExecute) && 0 == $this->errorCounter) {
             $descriptorSpec = array(
                 0 => array('pipe', 'r'),
                 1 => array('pipe', 'w'),
@@ -648,10 +715,19 @@ class Mage_Database_Tool
 
                 $retVal = proc_close($process);
                 if (!$retVal) {
+                    if ($retStdOutAsArray) {
+                        $stdOut = explode("\n", $stdOut);
+                        $stdOut = is_array($stdOut) ? $stdOut : array($stdOut);
+                        foreach ($stdOut as $key => $table) {
+                            if (!$table) {
+                                unset($stdOut[$key]);
+                            }
+                        }
+                    }
                     return $stdOut;
                 } else {
-                    $this->handleError('exec2');
-                    echo "error message:\n$stdErr\n";
+                    $this->handleError('exec2', null, true);
+                    echo $stdErr."\n";
                     die();
                 }
 
@@ -740,6 +816,7 @@ class Mage_Database_Tool
                     case '--import':
                     case '-i':
                         if ($file && file_exists($file) && !is_dir($file)) {
+                            $this->pushCommand(self::ACTION_CLEAR, null);
                             $this->pushCommand(self::ACTION_IMPORT, $file);
                             $i++;
                         } else {
@@ -786,9 +863,10 @@ class Mage_Database_Tool
 //                        $this->executeWithoutAsk = true;
 //                        break;
 
-//                    case '--test':
-//                    case '-t':
-//                        break;
+                    case '--test':
+                    case '-t':
+                        $this->pushCommand(self::ACTION_TEST, null);
+                        break;
 
                     default:
                         $this->handleError('arg1', $arg);
@@ -817,18 +895,21 @@ class Mage_Database_Tool
     /**
      * Handle wrapper for command errors
      *
-     * @param $errorCode
-     * @param $arg
+     * @param string $errorCode
+     * @param string $arg
+     * @param bool $printNL
      */
-    protected function handleError($errorCode, $arg = null)
+    protected function handleError($errorCode, $arg = null, $printNL = false)
     {
-        if (is_null($errorCode)) {
-            return;
+        if (is_string($errorCode)) {
+            $errorMsg = isset($this->errorMessages[$errorCode]) ? $this->errorMessages[$errorCode] : $errorCode;
+            if ($printNL) {
+                printf("\n");
+            }
+            printf("error: " . $errorMsg . (is_null($arg) ? '' : " ('%s')") . "\n", $arg);
+            $this->errorCounter++;
+            $this->doCommands = false;
         }
-        $errorMsg = isset($this->errorMessages[$errorCode]) ? $this->errorMessages[$errorCode] : $errorCode;
-        printf("error: " . $errorMsg . (is_null($arg) ? '' : " ('%s')") . "\n", $arg);
-        $this->errorCounter++;
-        $this->doCommands = false;
     }
 
     /**
@@ -869,13 +950,13 @@ class Mage_Database_Tool
         echo "\n";
         echo " Options:\n";
         echo "   -d, --debug               : do not execute any sql command (just show commands)\n";
-//        echo "   -f, --force               : do not ask for execute critical sql statements\n";
 //        echo "   -r, --remote              : use db access data from config->global->remote_access->[same structure as local]\n";
 //        echo "  coll run                             (when using --remote 'import' and 'run' are disabled)\n";
         echo "   -h, --help                : show this help\n";
         echo "   -s, --show                : show data found in local.xml\n";
 //        echo "   -t, --test                : test DB connection\n";
         echo "   -v, --verbose             : show more details\n";
+        echo "                               (if debug active: enable sql command to get all tables)\n";
         echo "\n";
         echo " Parameters:\n";
         echo "   -c, --clear               : clear DB (drop all tables)\n";
