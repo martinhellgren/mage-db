@@ -14,7 +14,7 @@ libxml_use_internal_errors(true);
 class Mage_Database_Tool
 {
     private $script = 'mage-db.php';
-    private $version = 'v0.02.40';
+    private $version = 'v0.02.50';
 
     private $args = array();
     private $argCount = 0;
@@ -64,7 +64,13 @@ class Mage_Database_Tool
 
     const XPATH_BASEURL_UNSECURE = 'global/web/base_url/unsecure';
     const XPATH_BASEURL_SECURE = 'global/web/base_url/secure';
-
+    protected $xpath_baseurl_to_check = array(
+        0 => array('path' => '/config', 'child' => 'global'),
+        1 => array('path' => '/config/global', 'child' => 'web'),
+        2 => array('path' => '/config/global/web', 'child' => 'base_url'),
+        3 => array('path' => '/config/global/web/base_url', 'child' => 'unsecure'),
+        4 => array('path' => '/config/global/web/base_url', 'child' => 'secure'),
+    );
     const XPATH_REMOTE_CONNECTION_MODEL = 'global/resources/default_setup/connection/model';
     const XPATH_REMOTE_CONNECTION_TYPE = 'global/resources/default_setup/connection/type';
     const XPATH_REMOTE_CONNECTION_ACTIVE = 'global/remote_access/default_setup/connection/active';
@@ -121,6 +127,7 @@ class Mage_Database_Tool
     protected $dbType = self::DB_TYPE_LOCAL;
 
     protected $xml = null;
+    protected $dom = null;
     protected $xmlValid = false;
     protected $xmlInfoList = array(
         self::DB_MODEL,
@@ -141,9 +148,13 @@ class Mage_Database_Tool
     const ACTION_EXECUTE = 'run';
     const ACTION_CLEAR = 'clear';
     const ACTION_TEST = 'test';
+    const ACTION_SET_URLS = 'set_urls';
+    const ACTION_SET_URLS_IMPORT = 'set_urls_import';
+    const ACTION_SAVE_URLS = 'save_urls';
+    const ACTION_REMOVE_URLS = 'remove_urls';
 
     protected $errorMessages = array(
-        'arg1' => "unknown argument found",
+        'arg1' => "unknown argument ",
         'import1' => "import file missing or import file not found",
         'run1' => "sql script missing or sql script not found",
         'xml1' => "magento root directory missing or invalid",
@@ -152,9 +163,16 @@ class Mage_Database_Tool
         'export3' => "you can't export to a directory",
         'access' => "remote mode allows read db only",
         'exec1' => "can't create process",
-        'exec2' => "execute command returned with error",
+        'exec2' => "execute command failed",
         'get_tables1' => "unable to read tables from database",
         'get_tables2' => "execute sql is disabled, use -v to get tables in debug mode",
+        'save_urls1' => 'URL missing',
+        'write_xml1' => 'write_xml1',
+        'write_xml2' => 'write_xml2',
+    );
+
+    protected $warnMessages = array(
+        'set_urls1' => "no base urls found in local.xml",
     );
 
     const NOT_SET = '(not set)';
@@ -167,6 +185,9 @@ class Mage_Database_Tool
 
     protected $commandStack = array();
     protected $errorCounter = 0;
+
+    protected $doSetBaseUrlsAfterImport = true;
+    protected $secureIsHttps = false;
 
     /**
      * Constructor
@@ -406,7 +427,7 @@ class Mage_Database_Tool
      */
     public function printXmlLine($value)
     {
-        printf("db.%s = %s\n",
+        printf(" db.%s = %s\n",
             $value,
             ($this->db[$value] ? $this->db[$value] : self::NOT_SET)
         );
@@ -416,16 +437,16 @@ class Mage_Database_Tool
      * Run a single command
      *
      * @param string $action_code
-     * @param string $sqlFileName
+     * @param string $action_data
      * @return bool
      */
-    protected function runCommand($action_code, $sqlFileName = null)
+    protected function runCommand($action_code, $action_data = null)
     {
         switch ($action_code)
         {
             case self::ACTION_SHOW_XML:
                 if ($this->xmlValid) {
-                    printf("\nfile = %s\n", $this->pathPrefix . $this->configPath);
+                    printf("\n(file = %s)\n", $this->pathPrefix . $this->configPath);
                     foreach ($this->xmlInfoList as $info)
                     {
                         $this->printXmlLine($info);
@@ -434,45 +455,34 @@ class Mage_Database_Tool
                 break;
 
             case self::ACTION_EXPORT:
-                if (!$sqlFileName) {
-                    $sqlFileName = $this->getDefaultExportFile();
+                if (!$action_data) {
+                    $action_data = $this->getDefaultExportFile();
                 }
                 if (0 == $this->errorCounter) {
-                    if (is_writeable(dirname($sqlFileName))) {
-                        echo "db.export('$sqlFileName')";
+                    if (is_writeable(dirname($action_data))) {
+                        echo "db.export('$action_data')";
                         // extract DB schema
-                        $_command = $this->_getDumpSchemaStatement($sqlFileName);
+                        $_command = $this->_getDumpSchemaStatement($action_data);
                         $this->executeCommand($_command);
 
                         if (0 == $this->errorCounter) {
                             // extract DB data
-                            $_command = $this->_getDumpDataStatement($sqlFileName);
+                            $_command = $this->_getDumpDataStatement($action_data);
                             $this->executeCommand($_command);
                             echo $this->msg_done;
                         }
                     } else {
-                        $this->handleError('export1', $sqlFileName);
+                        $this->handleError('export1', $action_data);
                     }
                 }
                 break;
 
             case self::ACTION_IMPORT:
                 if ($this->isLocalAccess()) {
-                    echo "db.import('$sqlFileName')";
-                    $_command = $this->_getImportSqlFileStatement($sqlFileName);
+                    echo "db.import('$action_data')";
+                    $_command = $this->_getImportSqlFileStatement($action_data);
                     $this->executeCommand($_command);
                     echo $this->msg_done;
-
-                    // set shop base urls (if defined in local.xml)
-                    if ($this->db['http']) {
-                        echo "db.setBaseURLs()";
-                        $_command = $this->_getSetBaseUrlUnsecureStatement();
-                        $this->executeCommand($_command);
-
-                        $_command = $this->_getSetBaseUrlSecureStatement();
-                        $this->executeCommand($_command);
-                        echo $this->msg_done;
-                    }
                 } else {
                     $this->handleError('access');
                 }
@@ -480,8 +490,8 @@ class Mage_Database_Tool
 
             case self::ACTION_EXECUTE:
                 if ($this->isLocalAccess()) {
-                    echo "db.run('$sqlFileName')";
-                    $_command = $this->_getExecuteSqlFileStatement($sqlFileName);
+                    echo "db.run('$action_data')";
+                    $_command = $this->_getExecuteSqlFileStatement($action_data);
                     $this->executeCommand($_command);
                     echo $this->msg_done;
                 } else {
@@ -526,7 +536,7 @@ class Mage_Database_Tool
                             }
                         }
                     } else {
-                        if ($this->debug) {
+                        if ($this->debug && !$this->verbose) {
                             $this->handleError('get_tables2', null, true);
                         } else {
                             $this->handleError('get_tables1');
@@ -536,6 +546,7 @@ class Mage_Database_Tool
                     $this->handleError('access');
                 }
                 break;
+
             case self::ACTION_TEST:
                 echo "db.testConnection()";
                 $_command = $this->_getTestDatabaseConnectionStatement();
@@ -547,7 +558,157 @@ class Mage_Database_Tool
                     echo $this->msg_done;
                 }
                 break;
+
+            case self::ACTION_SET_URLS_IMPORT:
+                if (!$this->doSetBaseUrlsAfterImport) {
+                    break;
+                }
+            case self::ACTION_SET_URLS:
+                if ($this->isLocalAccess()) {
+                    // set shop base urls (if defined in local.xml)
+                    if ($this->db[self::DB_HTTP]) {
+                        if ($this->verbose) {
+                            echo "db.setBaseURL.Unsecure('".$this->db[self::DB_HTTP]."')";
+                        } else {
+                            echo "db.setBaseURLs()";
+                        }
+                        $_command = $this->_getSetBaseUrlUnsecureStatement();
+                        if (false !== $this->executeCommand($_command)) {
+                            if ($this->verbose) {
+                                echo $this->msg_done;
+                                echo "db.setBaseURL.Secure('".$this->db['https']."')";
+
+                            }
+                            $_command = $this->_getSetBaseUrlSecureStatement();
+                            if (false !== $this->executeCommand($_command)) {
+                                $this->executeCommand($_command);
+                                echo $this->msg_done;
+                            }
+                        }
+                    } else {
+                        $this->handleWarning('set_urls1', true);
+                    }
+                } else {
+                    $this->handleError('access');
+                }
+                break;
+
+            case self::ACTION_SAVE_URLS:
+                if ($this->isLocalAccess()) {
+                    echo "save new BASE_URLS to local.xml";
+                    $unsecureUrl = trim($action_data);
+                    if ('/' != substr($unsecureUrl, -1)) {
+                        $unsecureUrl .= '/';
+                    }
+                    $secureUrl = $unsecureUrl;
+                    if ($this->secureIsHttps) {
+                        $secureUrl = preg_replace('/http:/i', 'https:', $unsecureUrl);
+                    }
+                    $this->db[self::DB_HTTP] = $unsecureUrl;
+                    $this->db[self::DB_HTTPS] = $secureUrl;
+
+                    $this->saveLocalXml($unsecureUrl, $secureUrl);
+
+                } else {
+                    $this->handleError('access');
+                }
+                break;
+
+            case self::ACTION_REMOVE_URLS:
+                if ($this->isLocalAccess()) {
+                    echo "remove BASE_URLS from local.xml";
+                    $this->db[self::DB_HTTP] = false;
+                    $this->db[self::DB_HTTPS] = false;
+
+                    $this->saveLocalXml();
+
+                } else {
+                    $this->handleError('access');
+                }
+                break;
         }
+    }
+
+    /**
+     * Save xml data to local.xml
+     *
+     * @param string $unsecureUrl
+     * @param string $secureUrl
+     */
+    protected function saveLocalXml($unsecureUrl = '', $secureUrl = '')
+    {
+        if (is_string($unsecureUrl) && is_string($secureUrl)) {
+            $xpathObj = new DOMXpath($this->dom);
+            foreach ($this->xpath_baseurl_to_check as $nodeData) {
+                if (is_array($nodeData)) {
+                    $nodeParent = null;
+                    $elements = $xpathObj->query($nodeData['path']);
+                    if ($elements->length > 0) {
+                        $nodeParent = $elements->item(0);
+                        $result = false;
+                        for ($i = 0; $i < $nodeParent->childNodes->length; $i++) {
+                            $result = ($nodeData['child'] == $nodeParent->childNodes->item($i)->nodeName);
+                            if ($result) break;
+                        }
+                        if (!$result) {
+//                            $child = new DOMNode($nodeData['child']);
+//                            $nodeParent->appendChild(new DOMNode($nodeData['child']));
+                            $child = $this->dom->createElement($nodeData['child']);
+                            $nodeParent->appendChild($child);
+                        }
+                    }
+
+                }
+            }
+            $elements = $xpathObj->query(self::XPATH_BASEURL_UNSECURE);
+            if ($elements->length > 0) {
+                $node = $elements->item(0);
+                for ($i = 0; $i < $node->childNodes->length; $i++) {
+                    $node->removeChild($node->childNodes->item($i));
+                }
+                $child = $this->dom->createCDATASection($unsecureUrl);
+                $node->appendChild($child);
+            }
+            $elements = $xpathObj->query(self::XPATH_BASEURL_SECURE);
+            if ($elements->length > 0) {
+                $node = $elements->item(0);
+                for ($i = 0; $i < $node->childNodes->length; $i++) {
+                    $node->removeChild($node->childNodes->item($i));
+                }
+                $child = $this->dom->createCDATASection($secureUrl);
+                $node->appendChild($child);
+            }
+
+            $xmlFile = $this->pathPrefix . $this->configPath;
+            $i = 1;
+            $backupFile = $this->getBackupFileName($i);
+            while (file_exists($backupFile)) {
+                $i++;
+                $backupFile = $this->getBackupFileName($i);
+            }
+            try {
+                rename($xmlFile, $backupFile);
+                $content = $this->dom->saveXML();
+                if (false === file_put_contents($xmlFile, $content)) {
+                    $this->handleError('write_xml2', null, true);
+                } else {
+                    echo $this->msg_done;
+                }
+
+            } catch (Exception $e) {
+                $this->handleError('write_xml1', $e->getMessage(), true);
+            }
+        }
+    }
+
+    /**
+     *
+     * @param int $backupNumber
+     * @return string
+     */
+    protected function getBackupFileName($backupNumber = 1)
+    {
+        return $this->pathPrefix . $this->configPath . sprintf('.%03d', $backupNumber) . '.backup';
     }
 
     /**
@@ -584,10 +745,13 @@ class Mage_Database_Tool
             }
 
             $this->xml = simplexml_load_file($this->pathPrefix . $this->configPath, NULL, LIBXML_NOCDATA);
-
             if (false !== $this->xml) {
                 $this->parseLocalXml();
                 if ($this->xmlValid) {
+                    $this->dom = new DOMDocument();
+                    $this->dom->formatOutput = true;
+                    $this->dom->preserveWhiteSpace = false;
+                    $this->dom->load($this->pathPrefix . $this->configPath);
                     switch ($this->db[self::DB_MODEL])
                     {
                         case self::DB_MODEL_MYSQL:
@@ -728,7 +892,7 @@ class Mage_Database_Tool
                 } else {
                     $this->handleError('exec2', null, true);
                     echo $stdErr."\n";
-                    die();
+                    //die();
                 }
 
             } else {
@@ -799,6 +963,11 @@ class Mage_Database_Tool
                         $this->pushCommand(self::ACTION_SHOW_XML, false);
                         break;
 
+                    case '--test':
+                    case '-t':
+                        $this->pushCommand(self::ACTION_TEST, null);
+                        break;
+
                     case '--export':
                     case '-e':
                         if ($file && '-' != substr($file, 0, 1)) {
@@ -818,14 +987,15 @@ class Mage_Database_Tool
                         if ($file && file_exists($file) && !is_dir($file)) {
                             $this->pushCommand(self::ACTION_CLEAR, null);
                             $this->pushCommand(self::ACTION_IMPORT, $file);
+                            $this->pushCommand(self::ACTION_SET_URLS_IMPORT, null);
                             $i++;
                         } else {
                             $this->handleError('import1', $file);
                         }
                         break;
 
-                    case '--run':
-                    case '-r':
+                    case '--execute':
+                    case '-x':
                         if (file_exists($file)) {
                             $this->pushCommand(self::ACTION_EXECUTE, $file);
                             $i++;
@@ -835,7 +1005,6 @@ class Mage_Database_Tool
                         break;
 
                     case '--xml':
-                    case '-x':
                         if ($file && is_dir($file)) {
                             $this->searchUpward = false;
                             $this->pathPrefix = $file;
@@ -848,25 +1017,39 @@ class Mage_Database_Tool
                         }
                         break;
 
-                    case '--clear':
-                    case '-c':
+                    case '--truncate':
                         $this->pushCommand(self::ACTION_CLEAR, null);
+                        break;
+
+                    case '--no-base-urls':
+                        $this->doSetBaseUrlsAfterImport = false;
+                        break;
+
+                    case '--set-base-urls':
+                        $this->pushCommand(self::ACTION_SET_URLS, null);
+                        break;
+
+                    case '--save-base-urls':
+                        if ($file) {
+                            $this->pushCommand(self::ACTION_SAVE_URLS, $file);
+                            $i++;
+                            break;
+                        } else {
+                            $this->handleError('save_urls1');
+                        }
+
+                    case '--https':
+                        $this->secureIsHttps = true;
+                        break;
+
+                    case '--remove-base-urls':
+                        $this->pushCommand(self::ACTION_REMOVE_URLS, null);
                         break;
 
 //                    case '--remote':
 //                    case '-r':
 //                        $this->dbType = self::DB_TYPE_REMOTE;
 //                        break;
-
-//                    case '--force':
-//                    case '-f':
-//                        $this->executeWithoutAsk = true;
-//                        break;
-
-                    case '--test':
-                    case '-t':
-                        $this->pushCommand(self::ACTION_TEST, null);
-                        break;
 
                     default:
                         $this->handleError('arg1', $arg);
@@ -893,7 +1076,7 @@ class Mage_Database_Tool
     }
 
     /**
-     * Handle wrapper for command errors
+     * wrapper for handle command errors
      *
      * @param string $errorCode
      * @param string $arg
@@ -909,6 +1092,24 @@ class Mage_Database_Tool
             printf("error: " . $errorMsg . (is_null($arg) ? '' : " ('%s')") . "\n", $arg);
             $this->errorCounter++;
             $this->doCommands = false;
+        }
+    }
+
+    /**
+     * wrapper for handle warnings
+     *
+     * @param string $warnCode
+     * @param string $arg
+     * @param bool $printNL
+     */
+    protected function handleWarning($warnCode, $arg = null, $printNL = false)
+    {
+        if (is_string($warnCode)) {
+            $errorMsg = isset($this->warnMessages[$warnCode]) ? $this->warnMessages[$warnCode] : $warnCode;
+            if ($printNL) {
+                printf("\n");
+            }
+            printf("warning: " . $errorMsg . (is_null($arg) ? '' : " ('%s')") . "\n", $arg);
         }
     }
 
@@ -946,30 +1147,38 @@ class Mage_Database_Tool
     protected function showHelp()
     {
         echo "Magento DB-Tool " . $this->version ."\n";
-        echo "Usage: [php] ".$this->script." [OPTION]... [PARAMETER]...\n";
+        echo "Syntax: php ".$this->script." [Options] [Command]\n";
+        echo "\n";
+        echo "(*) default operation dumps DB to default location\n";
+        echo "(*) default location is (magento-dir)/var" . DS . "{Y-m-d-His}_{DB.name}.sql\"\n";
         echo "\n";
         echo " Options:\n";
-        echo "   -d, --debug               : do not execute any sql command (just show commands)\n";
-//        echo "   -r, --remote              : use db access data from config->global->remote_access->[same structure as local]\n";
-//        echo "  coll run                             (when using --remote 'import' and 'run' are disabled)\n";
-        echo "   -h, --help                : show this help\n";
-        echo "   -s, --show                : show data found in local.xml\n";
-//        echo "   -t, --test                : test DB connection\n";
-        echo "   -v, --verbose             : show more details\n";
-        echo "                               (if debug active: enable sql command to get all tables)\n";
+        echo "   -h, --help                  : show this help\n";
+        echo "   -s, --show                  : show data found in local.xml\n";
+        echo "   -d, --debug                 : do not execute any sql command (just show commands)\n";
+        echo "   -v, --verbose               : show more details\n";
+        echo "                                 (@debug mode: enable sql command to get all tables)\n";
+        echo "   --xml MAGENTO-ROOT          : don't look upward for local.xml, use MAGENTO-ROOT/app/etc/local.xml instead\n";
+//        echo "   -r, --remote                : use db access data from config->global->remote_access->[same structure as local]\n";
+//        echo "                                 (disables import and execute)\n";
         echo "\n";
-        echo " Parameters:\n";
-        echo "   -c, --clear               : clear DB (drop all tables)\n";
-        echo "   -e, --export [FILENAME]   : dump DB to FILENAME (or to default location)\n";
-        echo "   -i, --import FILENAME     : import DB from FILENAME (drop ALL tables first; set BASE_URLS optional)\n";
-        echo "                               define base urls in the local.xml at nodes:\n";
-        echo "                               config->global->web->base_url->{unsecure resp. secure}\n";
-        echo "                               (uncomment nodes or leave blank if not needed)\n";
-        echo "   -r, --run FILENAME        : execute sql script FILENAME\n";
-        echo "   -x, --xml MAGENTO-ROOT    : don't look upward for local.xml, use MAGENTO-ROOT/app/etc/local.xml instead\n";
+        echo " Commands:\n";
+        echo "   -e, --export [FILENAME]     : dump DB to FILENAME (default location if empty)\n";
+        echo "   -i, --import FILENAME       : import DB from FILENAME (drop tables; import file; set BASE_URLS)\n";
+        echo "                                 (see 'Base Url Control' for more options)\n";
+        echo "   -x, --execute FILE          : execute FILE if exists\n";
+//        echo "   -q, --sql SQL               : execute SQL command\n";
+        echo "   -t, --test                  : test DB connection\n";
+        echo "   --truncate                  : truncate DB (drop all tables)\n";
         echo "\n";
-        echo " Note: run without any parameter or --export without parameter will dump the DB to default location\n";
-        echo "                             : (magento-dir)/var" . DS . "{Y-m-d-His}_{DB.name}.sql\"\n";
+        echo " Base Url Control:\n";
+        echo "   --save-base-urls URL        : store URL as BASE_URLS (unsecure and secure) in local.xml\n";
+        echo "                                 nodes in local.xml: config->global->web->base_url->{unsecure resp. secure}\n";
+        echo "   --https                     : change protocol to HTTPS for secure BASE_URL\n";
+        echo "   --set-base-urls             : set BASE_URLS found in local.xml to DB\n";
+        echo "   --remove-base-urls          : remove BASE_URLS from local.xml\n";
+        echo "   --no-base-urls              : do not set BASE_URLS after import\n";
+        echo "\n";
     }
 }
 
