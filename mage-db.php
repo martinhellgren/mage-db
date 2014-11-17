@@ -1,8 +1,10 @@
 <?php
 /**
- * @package Mage_Database_Tool
- * @origin https://gist.github.com/ceckoslab/4495889
- * @author Thomas Uhlig <tuhlig@mediarox.de>
+ * @package     Mage_Database_Tool
+ * @author      Thomas Uhlig <tuhlig@mediarox.de>
+ * @license     http://www.gnu.org/licenses/gpl-2.0.html
+ *
+ * based on https://gist.github.com/ceckoslab/4495889
  */
 
 define('DS', DIRECTORY_SEPARATOR);
@@ -10,6 +12,11 @@ libxml_use_internal_errors(true);
 
 /**
  * Magento Mysql tool for recurring import and export tasks.
+ */
+
+/* Ideen:
+ *  --nobackup
+ *
  */
 class Mage_Database_Tool
 {
