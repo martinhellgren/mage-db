@@ -1,6 +1,6 @@
 <?php
 /**
- * @package     Mage_Database_Tool
+ * @package     Magento_Database_Tool
  * @author      Thomas Uhlig <tuhlig@mediarox.de>
  * @license     http://www.gnu.org/licenses/gpl-2.0.html
  *
@@ -9,19 +9,21 @@
 
 define('DS', DIRECTORY_SEPARATOR);
 libxml_use_internal_errors(true);
+date_default_timezone_set('Europe/Berlin');
 
 /**
  * Magento Mysql tool for recurring import and export tasks.
  */
 
-/* Ideen:
- *  --nobackup
- *
+/* ideas:
+ *  - no backup
+ *  - cache tools
+ *  - info instead of warnings sometimes
  */
 class Mage_Database_Tool
 {
     private $script = 'mage-db.php';
-    private $version = 'v0.02.50';
+    private $version = 'v0.02.60';
 
     private $args = array();
     private $argCount = 0;
@@ -159,6 +161,7 @@ class Mage_Database_Tool
     const ACTION_SET_URLS_IMPORT = 'set_urls_import';
     const ACTION_SAVE_URLS = 'save_urls';
     const ACTION_REMOVE_URLS = 'remove_urls';
+    const ACTION_CREATE_DB = 'create_db';
 
     protected $errorMessages = array(
         'arg1' => "unknown argument ",
@@ -171,8 +174,10 @@ class Mage_Database_Tool
         'access' => "remote mode allows read db only",
         'exec1' => "can't create process",
         'exec2' => "execute command failed",
-        'get_tables1' => "unable to read tables from database",
-        'get_tables2' => "execute sql is disabled, use -v to get tables in debug mode",
+        'get_views1' => "unable to get views from database",
+        'get_views2' => "execute sql disabled, use -v to see view names",
+        'get_tables1' => "unable to get tables from database",
+        'get_tables2' => "execute sql disabled, use -v to see table names",
         'save_urls1' => 'URL missing',
         'write_xml1' => 'write_xml1',
         'write_xml2' => 'write_xml2',
@@ -182,7 +187,7 @@ class Mage_Database_Tool
         'set_urls1' => "no base urls found in local.xml",
     );
 
-    const NOT_SET = '(not set)';
+    const NOT_SET = '';
     const MSG_OK = ", ok\n";
     const MSG_DONE = ", done\n";
     protected $msg_done = self::MSG_DONE;
@@ -201,8 +206,8 @@ class Mage_Database_Tool
      */
     public function __construct($argv)
     {
-        $this->script = $argv[0];
         $this->args = $argv;
+        $this->script = basename($argv[0]);
         $this->argCount = count($argv) - 1;
         $this->pathPrefix = '';
         $this->configPath = 'app' . DS . 'etc' . DS . 'local.xml';
@@ -282,6 +287,25 @@ class Mage_Database_Tool
         }
     }
 
+    protected function _getAllViewsStatement()
+    {
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $_result = self::COMMAND_MYSQL;
+                $_result .= $this->_getGeneralAccessStatement(false);
+                $_result .= ' --skip-column-names --silent --execute="show full tables where table_type like \'view\'"';
+                $_result .= ' ' . $this->db[self::DB_NAME];
+
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
+    }
+
     protected function _getAllTablesStatement()
     {
         switch ($this->db[self::DB_MODEL])
@@ -290,6 +314,25 @@ class Mage_Database_Tool
                 $_result = self::COMMAND_MYSQL;
                 $_result .= $this->_getGeneralAccessStatement(false);
                 $_result .= ' --skip-column-names --silent --execute="show tables"';
+                $_result .= ' ' . $this->db[self::DB_NAME];
+
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
+    }
+
+    protected function _getDropViewStatement($view)
+    {
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $_result = self::COMMAND_MYSQL;
+                $_result .= $this->_getGeneralAccessStatement(false);
+                $_result .= ' --execute="SET FOREIGN_KEY_CHECKS = 0; drop view ' . $view .'"';
                 $_result .= ' ' . $this->db[self::DB_NAME];
 
                 return $this->_getStatementFinish($_result);
@@ -413,6 +456,42 @@ class Mage_Database_Tool
         }
     }
 
+    protected function _getShowDatabasesStatement()
+    {
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $_result = self::COMMAND_MYSQL;
+                $_result .= $this->_getGeneralAccessStatement(false);
+                $_result .= ' --execute="SHOW DATABASES"';
+
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
+    }
+
+    protected function _getCreateDatabaseStatement()
+    {
+        switch ($this->db[self::DB_MODEL])
+        {
+            case self::DB_MODEL_MYSQL:
+                $_result = self::COMMAND_MYSQL;
+                $_result .= $this->_getGeneralAccessStatement(false);
+                $_result .= ' --execute="CREATE DATABASE IF NOT EXISTS ' . $this->db[self::DB_NAME] . '"';
+
+                return $this->_getStatementFinish($_result);
+                break;
+
+            default:
+                return null;
+                break;
+        }
+    }
+
     protected function _getStatementFinish($statement)
     {
         switch ($this->db[self::DB_MODEL])
@@ -434,7 +513,7 @@ class Mage_Database_Tool
      */
     public function printXmlLine($value)
     {
-        printf(" db.%s = %s\n",
+        printf(" db.%s = '%s'\n",
             $value,
             ($this->db[$value] ? $this->db[$value] : self::NOT_SET)
         );
@@ -508,6 +587,50 @@ class Mage_Database_Tool
 
             case self::ACTION_CLEAR:
                 if ($this->isLocalAccess()) {
+                    echo "db.getAllViews()";
+                    // get all views in DB
+                    $_command = $this->_getAllViewsStatement();
+                    $allViews = $this->executeCommand($_command, (true == $this->verbose), true);
+                    if (is_array($allViews)) {
+                        $countViews = count($allViews);
+                        if ($this->debug) {
+                            echo "\n-> found " . $countViews . " view(s)";
+                        } else {
+                            echo ", found " . $countViews . " view(s)";
+                        }
+                        echo $this->msg_done;
+                        if ($countViews > 0) {
+                            // drop each view in DB
+                            echo "db.dropViews('*')";
+                            if ($this->verbose) {
+                                echo "\n";
+                            }
+                            foreach ($allViews as $_view) {
+                                $view = explode("\t", $_view);
+                                if ($view[0]) {
+                                    $_command = $this->_getDropViewStatement($view[0]);
+                                    if ($this->verbose) {
+                                        echo "db.dropView('$view[0]')";
+                                    }
+                                    if (false !== $this->executeCommand($_command)) {
+                                        if ($this->verbose) {
+                                            echo $this->msg_done;
+                                        }
+                                    }
+                                }
+                            }
+                            if (!$this->verbose && 0 == $this->errorCounter) {
+                                echo $this->msg_done;
+                            }
+                        }
+                    } else {
+                        if ($this->debug && !$this->verbose) {
+                            $this->handleError('get_views2', null, true);
+                        } else {
+                            $this->handleError('get_views1');
+                        }
+                    }
+
                     echo "db.getAllTables()";
                     // get all tables in DB
                     $_command = $this->_getAllTablesStatement();
@@ -522,7 +645,7 @@ class Mage_Database_Tool
                         echo $this->msg_done;
                         if ($countTables > 0) {
                             // drop each table in DB
-                            echo "db.dropTables()";
+                            echo "db.dropTables('*')";
                             if ($this->verbose) {
                                 echo "\n";
                             }
@@ -532,13 +655,14 @@ class Mage_Database_Tool
                                     if ($this->verbose) {
                                         echo "db.dropTable('$table')";
                                     }
-                                    $this->executeCommand($_command);
-                                    if ($this->verbose) {
-                                        echo $this->msg_done;
+                                    if (false !== $this->executeCommand($_command)) {
+                                        if ($this->verbose) {
+                                            echo $this->msg_done;
+                                        }
                                     }
                                 }
                             }
-                            if (!$this->verbose) {
+                            if (!$this->verbose && 0 == $this->errorCounter) {
                                 echo $this->msg_done;
                             }
                         }
@@ -549,6 +673,7 @@ class Mage_Database_Tool
                             $this->handleError('get_tables1');
                         }
                     }
+
                 } else {
                     $this->handleError('access');
                 }
@@ -593,7 +718,7 @@ class Mage_Database_Tool
                             }
                         }
                     } else {
-                        $this->handleWarning('set_urls1', true);
+                        $this->handleWarning('set_urls1', null);
                     }
                 } else {
                     $this->handleError('access');
@@ -628,6 +753,35 @@ class Mage_Database_Tool
                     $this->db[self::DB_HTTPS] = false;
 
                     $this->saveLocalXml();
+
+                } else {
+                    $this->handleError('access');
+                }
+                break;
+
+            case self::ACTION_CREATE_DB:
+                if ($this->isLocalAccess()) {
+                    echo "check if database exists";
+                    $_command = $this->_getShowDatabasesStatement();
+                    $data = $this->executeCommand($_command, (true == $this->verbose), true);
+                    if (false !== $data && is_array($data)) {
+                        if (!in_array($this->db[self::DB_NAME], $data)) {
+                            if (!$this->debug) {
+                                echo ", not yet\n";
+                            } else {
+                                echo "\n";
+                            }
+                            echo "create database";
+                            $_command = $this->_getCreateDatabaseStatement();
+                            if (false !== $this->executeCommand($_command)) {
+                                if (!$this->debug) {
+                                    echo self::MSG_DONE;
+                                }
+                            }
+                        } else {
+                            echo self::MSG_OK;
+                        }
+                    }
 
                 } else {
                     $this->handleError('access');
@@ -795,7 +949,7 @@ class Mage_Database_Tool
     {
         // Step 1
         if ($this->verbose) {
-            printf(", found one at %s", $this->pathPrefix . $this->configPath);
+            printf(", found one at '%s'", $this->pathPrefix . $this->configPath);
         }
 
         if (($_data = $this->xml->xpath($this->xmlXpath[$this->dbType][self::DB_ACTIVE])) && ('1' == (string)$_data[0])) {
@@ -1058,6 +1212,10 @@ class Mage_Database_Tool
 //                        $this->dbType = self::DB_TYPE_REMOTE;
 //                        break;
 
+                    case '--create-db':
+                        $this->pushCommand(self::ACTION_CREATE_DB, null);
+                        break;
+
                     default:
                         $this->handleError('arg1', $arg);
                         $this->doCommands = false;
@@ -1154,33 +1312,34 @@ class Mage_Database_Tool
     protected function showHelp()
     {
         echo "Magento DB-Tool " . $this->version ."\n";
-        echo "Syntax: php ".$this->script." [Options] [Command]\n";
+        echo "Syntax: php " . $this->script . " [Options] [Command]\n";
         echo "\n";
         echo "(*) default operation dumps DB to default location\n";
-        echo "(*) default location is (magento-dir)/var" . DS . "{Y-m-d-His}_{DB.name}.sql\"\n";
+        echo "(*) default location is \"(MAGENTO-ROOT)" . DS . "var" . DS . "{Y-m-d-His}_{DB.Name}.sql\"\n";
         echo "\n";
         echo " Options:\n";
         echo "   -h, --help                  : show this help\n";
         echo "   -s, --show                  : show data found in local.xml\n";
         echo "   -d, --debug                 : do not execute any sql command (just show commands)\n";
         echo "   -v, --verbose               : show more details\n";
-        echo "                                 (@debug mode: enable sql command to get all tables)\n";
+        echo "                                 (if debug mode is active any 'show' command will be executed)\n";
         echo "   --xml MAGENTO-ROOT          : don't look upward for local.xml, use MAGENTO-ROOT/app/etc/local.xml instead\n";
 //        echo "   -r, --remote                : use db access data from config->global->remote_access->[same structure as local]\n";
-//        echo "                                 (disables import and execute)\n";
+//        echo "                                 (import and any execute are disabled)\n";
         echo "\n";
         echo " Commands:\n";
-        echo "   -e, --export [FILENAME]     : dump DB to FILENAME (default location if empty)\n";
+        echo "   -e, --export [FILENAME]     : dump DB to FILENAME (without FILENAME to default location)\n";
         echo "   -i, --import FILENAME       : import DB from FILENAME (drop tables; import file; set BASE_URLS)\n";
-        echo "                                 (see 'Base Url Control' for more options)\n";
-        echo "   -x, --execute FILE          : execute FILE if exists\n";
-//        echo "   -q, --sql SQL               : execute SQL command\n";
+        echo "                                 (see 'Base Url Controls' for more options)\n";
         echo "   -t, --test                  : test DB connection\n";
-        echo "   --truncate                  : truncate DB (drop all tables)\n";
+        echo "   -x, --execute FILE          : execute FILE\n";
+        echo "   -q, --sql 'SQL-COMMAND'     : execute SQL-COMMAND\n";
+        echo "   --create-db                 : create DB (if not exists)\n";
+        echo "   --truncate                  : truncate DB (drop all tables/views)\n";
         echo "\n";
-        echo " Base Url Control:\n";
+        echo " Base Url Controls:\n";
         echo "   --save-base-urls URL        : store URL as BASE_URLS (unsecure and secure) in local.xml\n";
-        echo "                                 nodes in local.xml: config->global->web->base_url->{unsecure resp. secure}\n";
+        echo "                                 (node in local.xml: config->global->web->base_url->{unsecure/secure})\n";
         echo "   --https                     : change protocol to HTTPS for secure BASE_URL\n";
         echo "   --set-base-urls             : set BASE_URLS found in local.xml to DB\n";
         echo "   --remove-base-urls          : remove BASE_URLS from local.xml\n";
