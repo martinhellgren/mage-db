@@ -23,7 +23,7 @@ date_default_timezone_set('Europe/Berlin');
 class Mage_Database_Tool
 {
     private $script = 'mage-db.php';
-    private $version = 'v0.02.60';
+    private $version = 'v0.02.70';
 
     private $args = array();
     private $argCount = 0;
@@ -32,6 +32,8 @@ class Mage_Database_Tool
     const MAX_SEARCH_STEPS_UPWARD = 10;
     protected $pathPrefix;
     protected $configPath;
+
+    protected $interactivePassword = false;
 
     protected $doCommands = true;
 
@@ -231,7 +233,11 @@ class Mage_Database_Tool
         {
             case self::DB_MODEL_MYSQL:
                 $_result = ' --user=' . $this->db[self::DB_USER];
-                $_result .= ($this->db[self::DB_PASS] ? ' --password=' . $this->db[self::DB_PASS] : '');
+                if ($this->interactivePassword) {
+                    $_result .= ($this->db[self::DB_PASS] ? ' -p' : '');
+                } else {
+                    $_result .= ($this->db[self::DB_PASS] ? ' --password=' . $this->db[self::DB_PASS] : '');
+                }
                 $_result .= ' --host=' . $this->db[self::DB_HOST];
                 $_result .= ($this->db[self::DB_PORT] ? ' --port=' . $this->db[self::DB_PORT] : '');
                 $_result .= ($includeDbName ? ' ' . $this->db[self::DB_NAME] : '');
@@ -1216,6 +1222,10 @@ class Mage_Database_Tool
                         $this->pushCommand(self::ACTION_CREATE_DB, null);
                         break;
 
+                    case '--interactive-password':
+                        $this->interactivePassword = true;
+                        break;
+
                     default:
                         $this->handleError('arg1', $arg);
                         $this->doCommands = false;
@@ -1326,6 +1336,7 @@ class Mage_Database_Tool
         echo "   --xml MAGENTO-ROOT          : don't look upward for local.xml, use MAGENTO-ROOT/app/etc/local.xml instead\n";
 //        echo "   -r, --remote                : use db access data from config->global->remote_access->[same structure as local]\n";
 //        echo "                                 (import and any execute are disabled)\n";
+        echo "   --interactive-password      : ...\n";
         echo "\n";
         echo " Commands:\n";
         echo "   -e, --export [FILENAME]     : dump DB to FILENAME (without FILENAME to default location)\n";
